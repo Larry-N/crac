@@ -28,9 +28,9 @@ package sun.nio.fs;
 import java.nio.file.*;
 import java.util.*;
 import java.io.IOException;
-import jdk.internal.crac.mirror.CheckpointException;
-import jdk.internal.crac.mirror.Context;
-import jdk.internal.crac.mirror.Resource;
+import jdk.crac.CheckpointException;
+import jdk.crac.Context;
+import jdk.crac.Resource;
 import jdk.internal.crac.JDKResource;
 import jdk.internal.misc.Unsafe;
 
