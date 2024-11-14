@@ -968,4 +968,37 @@ public:
     virtual void execute(DCmdSource source, TRAPS);
 };
 
+class RunWSSDCmd : public DCmdWithParser {
+public:
+  DCmdArgument<char*> _filepath;
+  RunWSSDCmd(outputStream* output, bool heap) :
+    DCmdWithParser(output, heap),
+    _filepath("filepath", "The file path to the wss2", "STRING", true) {
+    _dcmdparser.add_dcmd_argument(&_filepath);
+  }
+    static const char* name() { return "JDK.runwss"; }
+    static const char* description() {
+      return "Run wss tool agians this very JVM, path to wss specified in this command";
+    }
+    static const char* impact() {
+      return "Unknown";
+    }
+    static int num_arguments() { return 1; }
+    virtual void execute(DCmdSource source, TRAPS);
+};
+
+class StopWSSDCmd : public DCmd {
+public:
+  StopWSSDCmd(outputStream* output, bool heap) : DCmd(output, heap) { }
+    static const char* name() { return "JDK.stopwss"; }
+    static const char* description() {
+      return "Stop wss tool agians this very JVM";
+    }
+    static const char* impact() {
+      return "Unknown";
+    }
+    static int num_arguments() { return 0; }
+    virtual void execute(DCmdSource source, TRAPS);
+};
+
 #endif // SHARE_SERVICES_DIAGNOSTICCOMMAND_HPP

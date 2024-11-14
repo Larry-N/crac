@@ -48,6 +48,15 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
+import java.util.regex.*;
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.IOException;
+import jdk.internal.misc.Unsafe;
+import java.lang.reflect.Field;
 /**
  * The coordination service.
  */
@@ -65,7 +74,7 @@ public class Core {
     private static native Object[] checkpointRestore0(int[] fdArr, Object[] objArr, boolean dryRun, long jcmdStream);
     private static final Object checkpointRestoreLock = new Object();
     private static boolean checkpointInProgress = false;
-
+    public static volatile byte value;
     private static class FlagsHolder {
         private FlagsHolder() {}
         public static final boolean TRACE_STARTUP_TIME =
@@ -258,7 +267,76 @@ public class Core {
         assert !checkpointException.hasException() || !restoreException.hasException();
         checkpointException.throwIfAny();
         restoreException.throwIfAny();
+        
+	warmupMemoryAfterRestore();//warmup the memory!
+   }
+
+    private static void memTouch(List<Long> mal) throws Exception {
+        // to avoid SIGSEGV verify mem addresses before access
+        ProcSelfMapsReader psmr = new ProcSelfMapsReader();
+        psmr.readMemoryRanges();
+
+
+        Field field = Unsafe.class.getDeclaredField("theUnsafe");
+        field.setAccessible(true);
+        Unsafe unsafe = (Unsafe) field.get(null);
+        int touchedPages = 0;
+        int skipedPages = 0;
+
+        for (Long address : mal) {
+            if (psmr.isAddressAvaliableForRead(address)) {
+                value = unsafe.getByte(address);
+                touchedPages++;
+            } else {
+                skipedPages++;
+            }
+        }
+        float touchedMb = (touchedPages*4096)/1048576;
+        System.out.printf("Memory pages 'touched' after the restore: %d (%.2f MB), no read permissions/address is unavaliable for: %d pages \n", touchedPages, touchedMb, skipedPages);
     }
+
+    public static List<Long> parseHexFile(String filePath) {
+        List<Long> hexValues = new ArrayList<>();
+        Pattern hexPattern = Pattern.compile("^[0-9A-Fa-f]+$");
+
+        // Check if the file exists before proceeding
+        File file = new File(filePath);
+        if (!file.exists()) {
+            System.err.println("File does not exist: " + filePath);
+            return hexValues;  // Return an empty list if file is missing
+        }
+
+        try (BufferedReader reader = Files.newBufferedReader(Paths.get(filePath))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (hexPattern.matcher(line).matches()) {
+                    try {
+                        // Parse as a hex long and add to list
+                        hexValues.add(Long.parseLong(line, 16));
+                    } catch (NumberFormatException e) {
+                        System.err.println("Skipping invalid hex number: " + line);
+                    }
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return hexValues;
+    }
+
+    private static void warmupMemoryAfterRestore() {
+        String filePath = "/tmp/workingset_log";
+        List<Long> pagesAddrList = parseHexFile(filePath);
+        try {
+		memTouch(pagesAddrList);
+            } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+    }
+
+
 
     /**
      * Requests checkpoint and returns upon a successful restore.
@@ -321,4 +399,5 @@ public class Core {
         }
         return null;
     }
+
 }

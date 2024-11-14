@@ -72,6 +72,15 @@
 #include "mallocInfoDcmd.hpp"
 #endif
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <signal.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <time.h>
+
 static void loadAgentModule(TRAPS) {
   ResourceMark rm(THREAD);
   HandleMark hm(THREAD);
@@ -143,6 +152,8 @@ void DCmd::register_dcmds(){
   DCmdFactory::register_DCmdFactory(new DCmdFactoryImpl<CompilerDirectivesClearDCmd>(full_export, true, false));
 
   DCmdFactory::register_DCmdFactory(new DCmdFactoryImpl<CheckpointDCmd>(full_export, true,false));
+  DCmdFactory::register_DCmdFactory(new DCmdFactoryImpl<RunWSSDCmd>(full_export, true,false));
+  DCmdFactory::register_DCmdFactory(new DCmdFactoryImpl<StopWSSDCmd>(full_export, true,false));
 
   // Enhanced JMX Agent Support
   // These commands won't be exported via the DiagnosticCommandMBean until an
@@ -1101,6 +1112,109 @@ void CheckpointDCmd::execute(DCmdSource source, TRAPS) {
       stream->print("%s", out);
     }
   }
+}
+
+static pid_t __wss_pid = -1;
+
+pid_t runCommand(const char *cmd, char *const args[]) {
+    pid_t pid = fork();
+
+    if (pid == -1) {
+        perror("Failed to fork");
+        return -1;
+    } else if (pid == 0) {
+        // Child process: execute the command
+        execv(cmd, args);
+        // If execv returns, it must have failed
+        perror("Failed to exec command");
+        exit(1);
+    }
+
+    // Parent process: return the child's PID
+    return pid;
+}
+
+// Function to check if a specific line is present in the log file
+int checkLogForLine(const char* logFile, const char* lineToFind) {
+    FILE *file = fopen(logFile, "r");
+    if (file == NULL) {
+        perror("Error opening log file");
+        return 0; // Return false if the file can't be opened
+    }
+
+    char line[1024];
+    while (fgets(line, sizeof(line), file)) {
+        if (strstr(line, lineToFind)) {
+            fclose(file);
+            return 1; // Line found
+        }
+    }
+
+    fclose(file);
+    return 0; // Line not found
+}
+
+
+
+void RunWSSDCmd::execute(DCmdSource source, TRAPS) { //@niv
+    pid_t pid = getpid();  // Get the current process ID
+    char pidStr[20];
+    snprintf(pidStr, sizeof(pidStr), "%d", pid);
+    char *LOCATION= _filepath.value();
+
+    // Build the command to run wss2 with the current PID as an argument
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "%s/wss2", LOCATION);
+    // Set up the arguments array for execv
+    char *args[] = {cmd, pidStr, "0", "y", NULL};
+
+    // Run the wss2 command
+    __wss_pid = runCommand(cmd, args);
+    if (__wss_pid == -1) {
+        fprintf(stderr, "Failed to run wss2 command.\n");
+        return;
+    }
+
+    // Define the log file path and the line to find
+    char logFile[1024];
+    snprintf(logFile, sizeof(logFile), "/tmp/workingset_log");
+    char lineToFind[1024];
+    snprintf(lineToFind, sizeof(lineToFind), "Watching PID %s page references untill SIGUSR1 signal arrives", pidStr);
+
+    // Start checking the log file for the line with a timeout of 60 seconds
+    time_t start = time(NULL);
+#define TIMEOUT 60
+    while (difftime(time(NULL), start) < TIMEOUT) {
+        if (checkLogForLine(logFile, lineToFind)) {
+            return;
+        }
+        sleep(10);  // Sleep for 10 second before checking again
+    }
+
+    // Timeout expired without finding the line
+    fprintf(stderr, "Timeout: Did not find the expected line in the log file within %d seconds.\n", TIMEOUT);
+}
+
+void StopWSSDCmd::execute(DCmdSource source, TRAPS) {
+    // Send SIGUSR1 to the specified PID
+    if (kill(__wss_pid, SIGUSR1) == -1) {
+        perror("Failed to send SIGUSR1");
+        return;
+    }
+    time_t start_time = time(NULL);
+#define TIMEOUT_FOR_WSS 1200 //20 minutes omg!
+#define SLEEP_SEC 2 // for big env sleep for 1 minute
+    while (difftime(time(NULL), start_time) < TIMEOUT_FOR_WSS) {
+        pid_t result = waitpid(__wss_pid, NULL, WNOHANG);
+        if (result == -1) { // Error occurred
+            perror("waitpid failed");
+            return;
+        } else if (result == __wss_pid) { // Process finished
+            return;
+        }
+        sleep(SLEEP_SEC);
+    }
+    fprintf(stderr, "Timeout: Did not get a completeon form wss tool within %d seconds.\n", TIMEOUT_FOR_WSS);
 }
 
 ThreadDumpToFileDCmd::ThreadDumpToFileDCmd(outputStream* output, bool heap) :
